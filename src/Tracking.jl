@@ -1,12 +1,6 @@
-module Tracking
-
-using StaticArrays
-using DifferentialEquations
-using ..Interpolation: InterpolatedFieldMap, get_fields
-
 # For a single charged particle, the ODE is:
-#   dpos/dt = p/m
-#   dp/dt = q * (E + (p/m) × B)
+#   dq/dt = p/m
+#   dp/dt = charge * (E + (p/m) × B)
 # We'll assemble these into a system of 6 variables: [x, px, y, py, z, pz].
 
 """
@@ -14,8 +8,8 @@ using ..Interpolation: InterpolatedFieldMap, get_fields
 
 Computes the time derivative of (pos, momentum) at state `u = [x, px, y, py, z, pz]`. 
 Parameters `p` is a NamedTuple or struct containing:
-- `q::Float64` (charge)
-- `m::Float64` (mass)
+- `charge::Float64` (charge)
+- `gamma_m::Float64` (mass times relativistic gamma)
 - `fieldmap::InterpolatedFieldMap`
 """
 function dynamics!(du, u, p, t)
@@ -23,20 +17,20 @@ function dynamics!(du, u, p, t)
     x, px, y, py, z, pz = u[1], u[2], u[3], u[4], u[5], u[6]
 
     # Unpack parameters
-    q = p.q
-    m = p.m
+    charge = p.charge
+    gamma_m = p.gamma_m
     fieldmap = p.fieldmap
 
     # Get fields at (x,y,z)
     E, B = get_fields(fieldmap, x, y, z)
 
     # Calculate velocities from momenta
-    vx, vy, vz = px/m, py/m, pz/m
+    vx, vy, vz = px/gamma_m, py/gamma_m, pz/gamma_m
     
-    # dp/dt = q*(E + v×B)
+    # dp/dt = charge*(E + v×B)
     momentum = SVector{3}(px, py, pz)
-    vel = momentum / m
-    force = q * (E + cross(vel, B))
+    vel = momentum / gamma_m
+    force = charge * (E + cross(vel, B))
 
     # du/dt
     du[1] = vx
@@ -51,32 +45,26 @@ end
     track_particle!(pos, momentum, q, m, ifm::InterpolatedFieldMap; tspan=(0.0,1e-6), solver=Tsit5())
 
 Track a single particle with initial position `pos` and momentum `momentum`,
-given charge `q`, mass `m`, and an `InterpolatedFieldMap`. 
+given charge , mass `m`, and an `InterpolatedFieldMap`. 
 We create an ODEProblem in DifferentialEquations.jl, solve it, and return
 the solution. The user can specify solver, timesteps, etc.
 """
-function track_particle!(pos::SVector{3,Float64},
-                         momentum::SVector{3,Float64},
-                         q::Float64,
-                         m::Float64,
+function track_particle!(particle::AbstractVector,
+                         charge::Float64,
+                         gamma_m::Float64,
                          ifm::InterpolatedFieldMap;
                          tspan=(0.0, 1e-6),
                          solver=Tsit5(),
                          save_everystep=true,
                          kwargs...)
-    # Build initial condition
-    u0 = [pos[1], momentum[1], pos[2], momentum[2], pos[3], momentum[3]]
-
     # Parameters
-    p = (q=q, m=m, fieldmap=ifm)
+    p = (charge=charge, gamma_m=gamma_m, fieldmap=ifm)
 
     # Define ODE problem
-    prob = ODEProblem(dynamics!, u0, tspan, p)
+    prob = ODEProblem(dynamics!, particle, tspan, p)
 
-    # Solve with chosen method (default: Tsit5())
+    # Solve with chosen method (default: DPRKN6())
     sol = solve(prob, solver; save_everystep=save_everystep, kwargs...)
 
     return sol
 end
-
-end # module
