@@ -4,7 +4,6 @@ using StaticArrays, DifferentialEquations, Interpolations, HDF5, LinearAlgebra
 
 # Load submodules
 include("fieldMap.jl")
-include("interpolation.jl")
 include("tracking.jl")
 
 # Optionally export what you want the user to access

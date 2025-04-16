@@ -10,7 +10,7 @@ Computes the time derivative of (pos, momentum) at state `u = [x, px, y, py, z, 
 Parameters `p` is a NamedTuple or struct containing:
 - `charge::Float64` (charge)
 - `gamma_m::Float64` (mass times relativistic gamma)
-- `fieldmap::InterpolatedFieldMap`
+- `fieldmap::FieldMap`
 """
 function dynamics!(du, u, p, t)
     # Unpack state
@@ -22,7 +22,7 @@ function dynamics!(du, u, p, t)
     fieldmap = p.fieldmap
 
     # Get fields at (x,y,z)
-    E, B = get_fields(fieldmap, x, y, z)
+    EM = get_fields(fieldmap, x, y, z)
 
     # Calculate velocities from momenta
     vx, vy, vz = px/gamma_m, py/gamma_m, pz/gamma_m
@@ -30,7 +30,7 @@ function dynamics!(du, u, p, t)
     # dp/dt = charge*(E + v×B)
     momentum = SVector{3}(px, py, pz)
     vel = momentum / gamma_m
-    force = charge * (E + cross(vel, B))
+    force = charge * (EM.E + cross(vel, EM.B))
 
     # du/dt
     du[1] = vx
@@ -42,7 +42,7 @@ function dynamics!(du, u, p, t)
 end
 
 """
-    track_particle!(pos, momentum, q, m, ifm::InterpolatedFieldMap; tspan=(0.0,1e-6), solver=Tsit5())
+    track_particle!(pos, momentum, q, m, fm::FieldMap; tspan=(0.0,1e-6), solver=Tsit5())
 
 Track a single particle with initial position `pos` and momentum `momentum`,
 given charge , mass `m`, and an `InterpolatedFieldMap`. 
@@ -52,13 +52,13 @@ the solution. The user can specify solver, timesteps, etc.
 function track_particle!(particle::AbstractVector,
                          charge::Float64,
                          gamma_m::Float64,
-                         ifm::InterpolatedFieldMap;
+                         fm::FieldMap;
                          tspan=(0.0, 1e-6),
                          solver=Tsit5(),
                          save_everystep=true,
                          kwargs...)
     # Parameters
-    p = (charge=charge, gamma_m=gamma_m, fieldmap=ifm)
+    p = (charge=charge, gamma_m=gamma_m, fieldmap=fm)
 
     # Define ODE problem
     prob = ODEProblem(dynamics!, particle, tspan, p)
