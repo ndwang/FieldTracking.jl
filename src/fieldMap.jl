@@ -60,20 +60,50 @@ function load_fieldmap(path::String)
             root_group = file[basePath]
         end
         
+        # Extract metadata attributes into a dictionary
+        metadata = Dict(
+            "lower_bound" => haskey(attributes(root_group), "gridLowerBound") ? 
+                             read_attribute(root_group, "gridLowerBound") : [1, 1, 1],
+            "origin_offset" => haskey(attributes(root_group), "gridOriginOffset") ? 
+                               read_attribute(root_group, "gridOriginOffset") : [0.0, 0.0, 0.0],
+            "spacing" => haskey(attributes(root_group), "gridSpacing") ? 
+                         read_attribute(root_group, "gridSpacing") : [1.0, 1.0, 1.0],
+            "grid_size" => haskey(attributes(root_group), "gridSize") ? 
+                           read_attribute(root_group, "gridSize") : [1, 1, 1],
+            "geometry" => haskey(attributes(root_group), "gridGeometry") ? 
+                          read_attribute(root_group, "gridGeometry") : "rectangular",
+            "field_scale" => haskey(attributes(root_group), "fieldScale") ? 
+                             only(read_attribute(root_group, "fieldScale")) : 1.0,
+            "harmonic" => haskey(attributes(root_group), "harmonic") ? 
+                          only(read_attribute(root_group, "harmonic")) : 0,
+            "phi0_fieldmap" => haskey(attributes(root_group), "RFphase") ? 
+                               only(read_attribute(root_group, "RFphase")) : 0.0,
+            "ele_anchor_pt" => haskey(attributes(root_group), "eleAnchorPt") ? 
+                               read_attribute(root_group, "eleAnchorPt") : "beginning",
+            "interpolation_order" => haskey(attributes(root_group), "interpolationOrder") ? 
+                                     only(read_attribute(root_group, "interpolationOrder")) : 1,
+            "fundamental_frequency" => haskey(attributes(root_group), "fundamentalFrequency") ? 
+                                       only(read_attribute(root_group, "fundamentalFrequency")) : 0.0,
+            "axisLabels" => haskey(attributes(root_group), "axisLabels") ? 
+                            read_attribute(root_group, "axisLabels") : ["x", "y", "z"]
+        )
+
+        # Use metadata dictionary
+        origin_offset = metadata["origin_offset"]
+        spacing = metadata["spacing"]
+        grid_size = metadata["grid_size"]
+        field_scale = metadata["field_scale"]
+        geometry = metadata["geometry"]
+        axis_labels = metadata["axisLabels"]
+        
         # Create coordinate grids
-        xgrid = [origin_offset[1] + (i-lower_bound[1])*spacing[1] for i in lower_bound[1]:(lower_bound[1]+grid_size[1]-1)]
-        ygrid = [origin_offset[2] + (i-lower_bound[2])*spacing[2] for i in lower_bound[2]:(lower_bound[2]+grid_size[2]-1)]
-        zgrid = [origin_offset[3] + (i-lower_bound[3])*spacing[3] for i in lower_bound[3]:(lower_bound[3]+grid_size[3]-1)]
+        xgrid = [origin_offset[1] + i * spacing[1] for i in 0:(grid_size[1] - 1)]
+        ygrid = [origin_offset[2] + i * spacing[2] for i in 0:(grid_size[2] - 1)]
+        zgrid = [origin_offset[3] + i * spacing[3] for i in 0:(grid_size[3] - 1)]
         
         # Initialize field arrays
         Edata = zeros(ComplexF64, grid_size[1], grid_size[2], grid_size[3], 3)
         Bdata = zeros(ComplexF64, grid_size[1], grid_size[2], grid_size[3], 3)
-        
-        # Determine axis labels and field component names
-        axis_labels = ["x", "y", "z"]
-        if haskey(attributes(root_group), "axisLabels")
-            axis_labels = read_attribute(root_group, "axisLabels")
-        end
         
         # Define component names based on geometry
         logical_labels = geometry == "cylindrical" ? ["r", "theta", "z"] : ["x", "y", "z"]
@@ -161,45 +191,30 @@ function load_fieldmap(path::String)
             end
         end
         
-        # Collect metadata into a dictionary
-        metadata = Dict(
-            "geometry" => haskey(attributes(root_group), "gridGeometry") ? 
-                          read_attribute(root_group, "gridGeometry") : "rectangular",
-            "field_scale" => haskey(attributes(root_group), "fieldScale") ? 
-                             only(read_attribute(root_group, "fieldScale")) : 1.0,
-            "harmonic" => haskey(attributes(root_group), "harmonic") ? 
-                          only(read_attribute(root_group, "harmonic")) : 0,
-            "phi0_fieldmap" => haskey(attributes(root_group), "RFphase") ? 
-                               only(read_attribute(root_group, "RFphase")) : 0.0,
-            "ele_anchor_pt" => haskey(attributes(root_group), "eleAnchorPt") ? 
-                               read_attribute(root_group, "eleAnchorPt") : "beginning",
-            "origin_offset" => haskey(attributes(root_group), "gridOriginOffset") ? 
-                               read_attribute(root_group, "gridOriginOffset") : [0.0, 0.0, 0.0],
-            "spacing" => haskey(attributes(root_group), "gridSpacing") ? 
-                         read_attribute(root_group, "gridSpacing") : [1.0, 1.0, 1.0],
-            "interpolation_order" => haskey(attributes(root_group), "interpolationOrder") ? 
-                                     only(read_attribute(root_group, "interpolationOrder")) : 1,
-            "lower_bound" => haskey(attributes(root_group), "gridLowerBound") ? 
-                             read_attribute(root_group, "gridLowerBound") : [1, 1, 1],
-            "grid_size" => haskey(attributes(root_group), "gridSize") ? 
-                           read_attribute(root_group, "gridSize") : [1, 1, 1],
-            "fundamental_frequency" => haskey(attributes(root_group), "fundamentalFrequency") ? 
-                                       only(read_attribute(root_group, "fundamentalFrequency")) : 0.0
-        )
-        
         return Edata, Bdata, metadata
     end
 end
 
 """
-    _make_itps(knots, A::Array)
+    _make_itps(knots, A)
 
-Creates a tuple of interpolators for the three components of the field array `A`.
-Each interpolator is constructed using the provided `knots` and the corresponding
-slice of the array `A`.
+Return a tuple `(itp₁,itp₂,itp₃)` of gridded interpolators
+for the three vector components stored in the 4‑D field array `A`.
+Singleton axes are treated as constants (NoInterp), other axes are linear.
 """
-_make_itps(knots, A::Array) =
-    ntuple(i -> interpolate(knots, view(A,:,:, :,i), Gridded(Linear())), 3)
+function _make_itps(knots::NTuple{3,Vector},
+                    A::Array{<:Number,4})
+
+    # choose a scheme for every spatial axis
+    schemes = ntuple(d -> size(A,d)==1 ? NoInterp() : Gridded(Linear()), 3)
+
+    # build one interpolator per vector component
+    ntuple(c -> begin
+        base_itp = interpolate(knots,
+                               view(A,:,:,:,c),
+                               Gridded(schemes))
+    end, 3)
+end
 
 """
     _interpolants(knots, E, B)
@@ -224,9 +239,9 @@ coordinate grids, and other metadata required for interpolation.
 function FieldMap(path::String)
     Edata, Bdata, metadata = load_fieldmap(path)
     
-    knots = (metadata["lower_bound"][1]:metadata["lower_bound"][1]+metadata["grid_size"][1]-1, 
-             metadata["lower_bound"][2]:metadata["lower_bound"][2]+metadata["grid_size"][2]-1, 
-             metadata["lower_bound"][3]:metadata["lower_bound"][3]+metadata["grid_size"][3]-1)
+    knots = (collect(metadata["lower_bound"][1]:metadata["lower_bound"][1]+metadata["grid_size"][1]-1), 
+             collect(metadata["lower_bound"][2]:metadata["lower_bound"][2]+metadata["grid_size"][2]-1), 
+             collect(metadata["lower_bound"][3]:metadata["lower_bound"][3]+metadata["grid_size"][3]-1))
     
     Eitp, Bitp = _interpolants(knots, Edata, Bdata)
     
