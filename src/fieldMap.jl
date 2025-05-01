@@ -1,5 +1,5 @@
 """
-    EMField
+    EMField{T}
 
 Represents the electromagnetic field with electric (E) and magnetic (B) components.
 """
@@ -9,39 +9,47 @@ struct EMField{T}
 end
 
 """
-    FieldMap{T}
+    FieldMap{E,B}
 
-Holds the raw data and coordinate grids used for building interpolation objects
-that return E, B. You can store these as arrays or any structure needed
-by your interpolation approach.
+Holds metadata and interpolation objects for electric (`E`)
+and magnetic (`B`) fields. The raw data is stored in interpolation objects.
 """
-struct FieldMap{T}
-    Edata::Union{Nothing, Array{T,4}}   # e.g. E[i,j,k,component]
-    Bdata::Union{Nothing, Array{T,4}}   # e.g. B[i,j,k,component]
-    metadata::Dict{String, Any}         # Metadata dictionary
+struct FieldMap{E,B}
+    # Required Attributes from openPMD-beamphysics standard
+    eleAnchorPt::String
+    gridGeometry::String
+    gridSpacing::Vector{Float64} # Grid spacing along each axis
+    gridLowerBound::Vector{Int}  # Lower bound index for each grid dimension
+    gridSize::Vector{Int}        # Number of grid points along each axis
+    gridOriginOffset::Vector{Float64} # Physical coordinates of the grid origin (index [1,1,1] or equivalent)
+    harmonic::Int                # Harmonic number (0 for static fields)
+
+    # Optional Metadata
+    metadata::Dict{String, Any}         # Dictionary for optional metadata
+
     # Field interpolators
-    Eitp::Union{Nothing,NTuple{3,Interpolations.GriddedInterpolation}}
-    Bitp::Union{Nothing,NTuple{3,Interpolations.GriddedInterpolation}}
+    Eitp::E     # Interpolator for Electric field (e.g., NTuple{3, Interpolations.GriddedInterpolation} or Nothing)
+    Bitp::B     # Interpolator for Magnetic field (e.g., NTuple{3, Interpolations.GriddedInterpolation} or Nothing)
 end
 
 """
-    load_fieldmap(path::String)::FieldMap
+    load_fieldmap(path::String)
 
-Load a FieldMap from an HDF5 file following the format used in Bmad.
-The function reads electric and magnetic field data along with metadata.
+Load field data and attributes from an HDF5 file specified by `path`.
+Returns Edata, Bdata, required attributes, and optional metadata.
 """
 function load_fieldmap(path::String)
     h5open(path, "r") do file
-        # Read metadata
+        # Determine the base path within the HDF5 file for field data
         basePath = ""
         if haskey(attributes(file), "externalFieldPath")
             basePath = read_attribute(file, "externalFieldPath")
         end
-        
-        # Handle the case with or without %T in the path
+
+        # Handle paths potentially containing '%T'
         root_group = file
         if occursin("/%T/", basePath)
-            # For multiple grids, we just take the first one for now
+            # For multiple grids, select the first one found
             base_dir = basePath[1:findfirst("/%T/", basePath)[1]-1]
             grid_groups = keys(file[base_dir])
             # Find the first valid grid group (should be an integer)
@@ -55,175 +63,178 @@ function load_fieldmap(path::String)
             if grid_id == ""
                 error("No valid grid found in HDF5 file")
             end
-            root_group = file[join([base_dir, grid_id],"/")]
+            root_group = file[joinpath(base_dir, grid_id)] # Use joinpath for robustness
         elseif basePath != ""
             root_group = file[basePath]
         end
-        
-        # Extract metadata attributes into a dictionary
-        metadata = Dict(
-            "lower_bound" => haskey(attributes(root_group), "gridLowerBound") ? 
-                             read_attribute(root_group, "gridLowerBound") : [1, 1, 1],
-            "origin_offset" => haskey(attributes(root_group), "gridOriginOffset") ? 
-                               read_attribute(root_group, "gridOriginOffset") : [0.0, 0.0, 0.0],
-            "spacing" => haskey(attributes(root_group), "gridSpacing") ? 
-                         read_attribute(root_group, "gridSpacing") : [1.0, 1.0, 1.0],
-            "grid_size" => haskey(attributes(root_group), "gridSize") ? 
-                           read_attribute(root_group, "gridSize") : [1, 1, 1],
-            "geometry" => haskey(attributes(root_group), "gridGeometry") ? 
-                          read_attribute(root_group, "gridGeometry") : "rectangular",
-            "field_scale" => haskey(attributes(root_group), "fieldScale") ? 
-                             only(read_attribute(root_group, "fieldScale")) : 1.0,
-            "harmonic" => haskey(attributes(root_group), "harmonic") ? 
-                          only(read_attribute(root_group, "harmonic")) : 0,
-            "phi0_fieldmap" => haskey(attributes(root_group), "RFphase") ? 
-                               only(read_attribute(root_group, "RFphase")) : 0.0,
-            "ele_anchor_pt" => haskey(attributes(root_group), "eleAnchorPt") ? 
-                               read_attribute(root_group, "eleAnchorPt") : "beginning",
-            "interpolation_order" => haskey(attributes(root_group), "interpolationOrder") ? 
-                                     only(read_attribute(root_group, "interpolationOrder")) : 1,
-            "fundamental_frequency" => haskey(attributes(root_group), "fundamentalFrequency") ? 
-                                       only(read_attribute(root_group, "fundamentalFrequency")) : 0.0,
-            "axisLabels" => haskey(attributes(root_group), "axisLabels") ? 
-                            read_attribute(root_group, "axisLabels") : ["x", "y", "z"]
+
+        # Read Required Attributes (provide defaults for robustness, though the spec requires them)
+        eleAnchorPt = haskey(attributes(root_group), "eleAnchorPt") ?
+                      read_attribute(root_group, "eleAnchorPt") : "beginning"
+        gridGeometry = haskey(attributes(root_group), "gridGeometry") ?
+                       read_attribute(root_group, "gridGeometry") : "rectangular"
+        gridSpacing = haskey(attributes(root_group), "gridSpacing") ?
+                      convert(Vector{Float64}, read_attribute(root_group, "gridSpacing")) : [1.0, 1.0, 1.0]
+        gridLowerBound = haskey(attributes(root_group), "gridLowerBound") ?
+                         convert(Vector{Int}, read_attribute(root_group, "gridLowerBound")) : [1, 1, 1]
+        gridSize = haskey(attributes(root_group), "gridSize") ?
+                   convert(Vector{Int}, read_attribute(root_group, "gridSize")) : [1, 1, 1]
+        gridOriginOffset = haskey(attributes(root_group), "gridOriginOffset") ?
+                           convert(Vector{Float64}, read_attribute(root_group, "gridOriginOffset")) : [0.0, 0.0, 0.0]
+        harmonic = haskey(attributes(root_group), "harmonic") ?
+                   convert(Int, only(read_attribute(root_group, "harmonic"))) : 0
+
+        # Extract optional metadata attributes into a dictionary
+        metadata = Dict{String, Any}()
+        optional_attrs = [
+            "fieldScale", "fundamentalFrequency", "gridCurvatureRadius",
+            "name", "RFphase", "interpolationOrder", "axisLabels"
+        ]
+        # Default values for optional attributes if not present in the file
+        defaults = Dict(
+            "fieldScale" => 1.0, "fundamentalFrequency" => 0.0, "gridCurvatureRadius" => 0.0,
+            "name" => "", "RFphase" => 0.0, "interpolationOrder" => 1, # Default to linear interpolation
+            "axisLabels" => ["x", "y", "z"] # Default axis labels
         )
 
-        # Use metadata dictionary
-        origin_offset = metadata["origin_offset"]
-        spacing = metadata["spacing"]
-        grid_size = metadata["grid_size"]
-        field_scale = metadata["field_scale"]
-        geometry = metadata["geometry"]
-        axis_labels = metadata["axisLabels"]
-        
-        # Create coordinate grids
-        xgrid = [origin_offset[1] + i * spacing[1] for i in 0:(grid_size[1] - 1)]
-        ygrid = [origin_offset[2] + i * spacing[2] for i in 0:(grid_size[2] - 1)]
-        zgrid = [origin_offset[3] + i * spacing[3] for i in 0:(grid_size[3] - 1)]
-        
-        # Initialize field arrays
-        Edata = zeros(ComplexF64, grid_size[1], grid_size[2], grid_size[3], 3)
-        Bdata = zeros(ComplexF64, grid_size[1], grid_size[2], grid_size[3], 3)
-        
-        # Define component names based on geometry
+        for attr in optional_attrs
+            if haskey(attributes(root_group), attr)
+                val = read_attribute(root_group, attr)
+                # Ensure scalar attributes read from HDF5 (which might be 1-element arrays) are stored as scalars
+                if attr in ["fieldScale", "fundamentalFrequency", "gridCurvatureRadius", "RFphase", "interpolationOrder", "harmonic"]
+                    metadata[attr] = only(val)
+                else
+                    metadata[attr] = val
+                end
+            end
+        end
+
+        # Use required attributes and optional metadata where needed
+        field_scale = metadata["fieldScale"] # Apply scaling factor during data reading
+        geometry = gridGeometry # Use the required attribute directly
+
+        # Initialize field data arrays (using ComplexF64 as per standard)
+        Edata = zeros(ComplexF64, gridSize[1], gridSize[2], gridSize[3], 3)
+        Bdata = zeros(ComplexF64, gridSize[1], gridSize[2], gridSize[3], 3)
+
+        # Define logical component names based on grid geometry
         logical_labels = geometry == "cylindrical" ? ["r", "theta", "z"] : ["x", "y", "z"]
-        
+
         # Determine data ordering (C or Fortran)
         data_order = ""
-        if haskey(attributes(root_group), "axisLabels")
-            if all(logical_labels .== axis_labels)
+        if haskey(metadata, "axisLabels") # Check metadata now
+            labels_in_meta = metadata["axisLabels"]
+            if all(logical_labels .== labels_in_meta)
                 data_order = "C"
-            elseif all(logical_labels .== reverse(axis_labels))
+            elseif all(logical_labels .== reverse(labels_in_meta))
                 data_order = "F"
             end
         end
-        
-        # Function to read field component and handle pseudo-datasets
+
+        # Helper function to read a field component dataset or handle pseudo-datasets (constant value)
         function read_field_component(group, component_name)
             if !haskey(group, component_name)
-                return zeros(ComplexF64, grid_size...)
+                # Return zeros if the component dataset doesn't exist
+                return zeros(ComplexF64, gridSize...)
             end
-            
+
             component = group[component_name]
-            
-            # Check if this is a pseudo-dataset (constant value)
+
+            # Check for pseudo-dataset (represented by an HDF5 group with a 'value' attribute)
             if typeof(component) <: HDF5.Group && haskey(attributes(component), "value")
                 value = read_attribute(component, "value")
+                # Ensure the value is complex
                 if !isa(value, Complex)
-                    value = complex(value)
+                    value = complex(Float64(value))
                 end
-                return fill(value, grid_size...)
+                # Return an array filled with the constant value. 
+                # TODO: store a constant value instead of a full array
+                return fill(convert(ComplexF64, value), gridSize...)
             end
-            
-            # Regular dataset
+
             return read(component)
         end
-        
+
         # Read electric field data
         if haskey(root_group, "electricField")
             e_group = root_group["electricField"]
             for (i, label) in enumerate(logical_labels)
                 if haskey(e_group, label)
                     data = read_field_component(e_group, label)
-                    
+
                     # Apply data ordering
-                    if data_order == "C"
-                        for ix in 1:grid_size[1], iy in 1:grid_size[2], iz in 1:grid_size[3]
-                            Edata[ix, iy, iz, i] = data[ix, iy, iz] * field_scale
-                        end
-                    elseif data_order == "F"
-                        for ix in 1:grid_size[1], iy in 1:grid_size[2], iz in 1:grid_size[3]
+                    if data_order == "F"
+                        for ix in 1:gridSize[1], iy in 1:gridSize[2], iz in 1:gridSize[3]
                             Edata[ix, iy, iz, i] = data[iz, iy, ix] * field_scale
                         end
                     else
-                        # Default to C ordering if not specified
-                        for ix in 1:grid_size[1], iy in 1:grid_size[2], iz in 1:grid_size[3]
+                        for ix in 1:gridSize[1], iy in 1:gridSize[2], iz in 1:gridSize[3]
                             Edata[ix, iy, iz, i] = data[ix, iy, iz] * field_scale
                         end
                     end
-                end
+                                end
             end
-        end
-        
+                end
+
         # Read magnetic field data
         if haskey(root_group, "magneticField")
             b_group = root_group["magneticField"]
             for (i, label) in enumerate(logical_labels)
                 if haskey(b_group, label)
                     data = read_field_component(b_group, label)
-                    
+
                     # Apply data ordering
-                    if data_order == "C"
-                        for ix in 1:grid_size[1], iy in 1:grid_size[2], iz in 1:grid_size[3]
-                            Bdata[ix, iy, iz, i] = data[ix, iy, iz] * field_scale
-                        end
-                    elseif data_order == "F"
-                        for ix in 1:grid_size[1], iy in 1:grid_size[2], iz in 1:grid_size[3]
+                    if data_order == "F"
+                        for ix in 1:gridSize[1], iy in 1:gridSize[2], iz in 1:gridSize[3]
                             Bdata[ix, iy, iz, i] = data[iz, iy, ix] * field_scale
                         end
                     else
-                        # Default to C ordering if not specified
-                        for ix in 1:grid_size[1], iy in 1:grid_size[2], iz in 1:grid_size[3]
+                        for ix in 1:gridSize[1], iy in 1:gridSize[2], iz in 1:gridSize[3]
                             Bdata[ix, iy, iz, i] = data[ix, iy, iz] * field_scale
                         end
                     end
-                end
+                                end
             end
-        end
-        
-        return Edata, Bdata, metadata
+                end
+
+        # Return loaded data, required attributes, and the metadata dictionary
+        return Edata, Bdata, eleAnchorPt, gridGeometry, gridSpacing, gridLowerBound, gridSize, gridOriginOffset, harmonic, metadata
     end
 end
 
 """
     _make_itps(knots, A)
 
-Return a tuple `(itp₁,itp₂,itp₃)` of gridded interpolators
-for the three vector components stored in the 4‑D field array `A`.
-Singleton axes are treated as constants (NoInterp), other axes are linear.
+Return a tuple `(itp₁, itp₂, itp₃)` of gridded interpolators for the three vector
+components stored in the N+1 dimensional field array `A`, using the N-dimensional
+`knots` (tuple of coordinate vectors for each dimension).
+Uses linear interpolation by default.
+TODO: Add support for other interpolation methods.
 """
-function _make_itps(knots::NTuple{3,Vector},
-                    A::Array{<:Number,4})
+function _make_itps(knots::NTuple{N, AbstractVector},
+                    A::AbstractArray{<:Number}) where N
 
-    # choose a scheme for every spatial axis
-    schemes = ntuple(d -> size(A,d)==1 ? NoInterp() : Gridded(Linear()), 3)
+    ndims(A) == N + 1 || error("Dimension mismatch: knots imply $(N)D grid, but data has $(ndims(A)-1) spatial dimensions.")
+    size(A)[1:N] == length.(knots) || error("Size mismatch between knots and data array dimensions.")
+    size(A, N + 1) == 3 || error("Data array must have size 3 in the last dimension (components).")
 
     # build one interpolator per vector component
-    ntuple(c -> begin
-        base_itp = interpolate(knots,
-                               view(A,:,:,:,c),
-                               Gridded(schemes))
-    end, 3)
+    ntuple(c ->
+            interpolate(knots, view(A, ntuple(_ -> Colon(), N)..., c), Gridded(Linear()))
+           , 3)
 end
 
 """
     _interpolants(knots, E, B)
 
-Generates interpolators for the electric (E) and magnetic (B) field components
-using the provided coordinate grids (`knots`). Returns a tuple of interpolators
-for E and B, or `nothing` if the respective field data is not provided.
+Generate interpolators for the electric (`E`) and magnetic (`B`) field component arrays
+using the provided coordinate grid vectors (`knots`).
+Returns a tuple `(Eitp, Bitp)`, where each element is either a tuple of
+interpolators (one per vector component) or `nothing` if the corresponding
+field data array (`E` or `B`) is `nothing`.
 """
 function _interpolants(knots, E, B)
+    # Create interpolators only if the data array is not nothing
     Eitp = E === nothing ? nothing : _make_itps(knots, E)
     Bitp = B === nothing ? nothing : _make_itps(knots, B)
     return Eitp, Bitp
@@ -232,92 +243,132 @@ end
 """
     FieldMap(path::String)::FieldMap
 
-Constructs a `FieldMap` object by loading field data and metadata from the
-specified HDF5 file. The function reads electric and magnetic field data,
-coordinate grids, and other metadata required for interpolation.
+Construct a `FieldMap` object by loading field data and metadata from the
+HDF5 file specified by `path`. It reads the data, determines the grid structure,
+and creates the necessary interpolators.
 """
 function FieldMap(path::String)
-    Edata, Bdata, metadata = load_fieldmap(path)
-    
-    knots = (collect(metadata["lower_bound"][1]:metadata["lower_bound"][1]+metadata["grid_size"][1]-1), 
-             collect(metadata["lower_bound"][2]:metadata["lower_bound"][2]+metadata["grid_size"][2]-1), 
-             collect(metadata["lower_bound"][3]:metadata["lower_bound"][3]+metadata["grid_size"][3]-1))
-    
-    Eitp, Bitp = _interpolants(knots, Edata, Bdata)
-    
-    return FieldMap(Edata, Bdata, metadata, Eitp, Bitp)
+    # Load raw data and attributes from the HDF5 file
+    Edata, Bdata, eleAnchorPt, gridGeometry, gridSpacing, gridLowerBound, gridSize, gridOriginOffset, harmonic, metadata = load_fieldmap(path)
+
+    # Create coordinate vectors (knots) and interpolators based on grid geometry
+    if lowercase(gridGeometry) == "cylindrical"
+        # Cylindrical geometry: Interpolate on the r-z plane (assuming azimuthal symmetry)
+        knots = (gridOriginOffset[1] .+ (gridLowerBound[1]:gridLowerBound[1]+gridSize[1]-1) .* gridSpacing[1],
+                gridOriginOffset[3] .+ (gridLowerBound[3]:gridLowerBound[3]+gridSize[3]-1) .* gridSpacing[3])
+
+        # Extract the r-z plane data
+        E_slice = Edata === nothing ? nothing : view(Edata, :, 1, :, :)
+        B_slice = Bdata === nothing ? nothing : view(Bdata, :, 1, :, :)
+
+        # Create 2D interpolators for the r-z plane
+        Eitp, Bitp = _interpolants(knots, E_slice, B_slice)
+
+    elseif lowercase(gridGeometry) == "rectangular"
+        # Rectangular geometry: Interpolate in 3D Cartesian space
+        knots = (gridOriginOffset[1] .+ (gridLowerBound[1]:gridLowerBound[1]+gridSize[1]-1) .* gridSpacing[1],
+                gridOriginOffset[2] .+ (gridLowerBound[2]:gridLowerBound[2]+gridSize[2]-1) .* gridSpacing[2],
+                gridOriginOffset[3] .+ (gridLowerBound[3]:gridLowerBound[3]+gridSize[3]-1) .* gridSpacing[3])
+        # Create 3D interpolators for the full grid
+        Eitp, Bitp = _interpolants(knots, Edata, Bdata)
+    else
+         error("Unsupported grid geometry: $gridGeometry")
+    end
+
+    # Construct and return the FieldMap object
+    return FieldMap(eleAnchorPt, gridGeometry, gridSpacing, gridLowerBound, gridSize, gridOriginOffset, harmonic,
+                    metadata, Eitp, Bitp)
 end
 
 """
-    FieldMap(x::Vector{T}, y::Vector{T}, z::Vector{T};
+    FieldMap(x::Vector{Float64}, y::Vector{Float64}, z::Vector{Float64};
+             eleAnchorPt::String = "beginning", gridGeometry::String = "rectangular",
+             gridLowerBound::Vector{Int} = [1, 1, 1], gridOriginOffset::Vector{Float64} = [0.0, 0.0, 0.0],
+             harmonic::Int = 0,
              E::Union{Nothing,Array{T,4}} = nothing,
              B::Union{Nothing,Array{T,4}} = nothing,
-             geometry::String = "rectangular") where T
+             metadata::Dict{String, Any} = Dict{String,Any}()) where T
 
-Constructs a `FieldMap` object using the provided coordinate grids (`x`, `y`, `z`)
-and optional electric (E) and magnetic (B) field data. The geometry of the grid
-can be specified as "rectangular" or "cylindrical".
+Construct a `FieldMap` object directly from coordinate vectors and field data arrays.
+Assumes a rectangular grid geometry by default. Calculates `gridSize` and `gridSpacing`
+from the provided coordinate vectors.
 """
-function FieldMap(x::Vector{T}, y::Vector{T}, z::Vector{T};
+function FieldMap(x::Vector{Float64}, y::Vector{Float64}, z::Vector{Float64};
+                  eleAnchorPt::String = "beginning",
+                  gridGeometry::String = "rectangular",
+                  gridLowerBound::Vector{Int} = [1, 1, 1],
+                  gridOriginOffset::Vector{Float64} = [0.0, 0.0, 0.0],
+                  harmonic::Int = 0,
                   E::Union{Nothing,Array{T,4}} = nothing,
                   B::Union{Nothing,Array{T,4}} = nothing,
-                  geometry::String     = "rectangular") where T
+                  metadata::Dict{String, Any} = Dict{String,Any}()) where T
+
+    # Calculate default gridSize and gridSpacing
+    gridSize = [length(x), length(y), length(z)]
+    gridSpacing = [x[2] - x[1], y[2] - y[1], z[2] - z[1]]
+
+    # Create interpolators
     knots = (x, y, z)
     Eitp, Bitp = _interpolants(knots, E, B)
-    metadata = Dict{String,Any}(
-        "geometry" => geometry
-    )
-    return FieldMap(E, B, metadata, Eitp, Bitp)
-end
 
-
-"""
-    get_fields_index(fm::FieldMap, i::Float64, j::Float64, k::Float64)::EMField
-
-Returns an `EMField` object representing the electric and magnetic field
-components at the specified grid indices `(i, j, k)`. The indices correspond
-to Cartesian or cylindrical coordinates based on the grid geometry.
-"""
-function get_fields_index(fm::FieldMap, i::Float64, j::Float64, k::Float64)
-    # Small helper closes over the point and handles the “maybe‑tuple”.
-    field_at(itp::NTuple{3}, i, j, k) = SVector{3}(map(t -> t(i, j, k), itp)...)
-    field_at(::Nothing,      i, j, k) = SVector{3, Float64}(0.0, 0.0, 0.0)    # fallback
-
-    E = field_at(fm.Eitp, i, j, k)
-    B = field_at(fm.Bitp, i, j, k)
-
-    return EMField(E, B)
+    # Construct and return the FieldMap object
+    return FieldMap(eleAnchorPt, gridGeometry, gridSpacing, gridLowerBound, gridSize, gridOriginOffset, harmonic,
+                    metadata, Eitp, Bitp)
 end
 
 """
     get_fields(fm::FieldMap, x::Float64, y::Float64, z::Float64)::EMField
 
-Returns an `EMField` object representing the electric and magnetic field
-components at the specified Cartesian coordinates `(x, y, z)`. If the grid
-geometry is cylindrical, the coordinates are converted to cylindrical before
-interpolation.
+Return an `EMField` object containing the interpolated electric and magnetic field
+vectors (`E`, `B`) at the specified Cartesian coordinates `(x, y, z)`.
+Handles coordinate transformations for cylindrical grids.
 """
 function get_fields(fm::FieldMap, x::Float64, y::Float64, z::Float64)
-    if lowercase(fm.metadata["geometry"]) == "rectangular"
-        # Already in Cartesian coordinates
-        return get_fields_index(fm, x, y, z)
-    elseif lowercase(fm.metadata["geometry"]) == "cylindrical"
-        # Convert Cartesian (x,y,z) to cylindrical (r,θ,z)
+    # Helper function to evaluate field components using the interpolator tuple
+     function field_at(itp_tuple::Union{Nothing, NTuple{N, Interpolations.AbstractInterpolation}}, coords...) where N
+        # Return zero vector if no interpolator exists for this field (E or B)
+        itp_tuple === nothing && return SVector{3, ComplexF64}(0.0, 0.0, 0.0)
+        # TODO: Ensure coordinates are within bounds or handle extrapolation
+        # Rely on Interpolations.jl default behavior for now
+        return SVector{3}(map(itp -> itp(coords...), itp_tuple)...)
+    end
+
+    if lowercase(fm.gridGeometry) == "rectangular"
+        # Rectangular grid: Interpolate directly using Cartesian coordinates (x, y, z)
+        E = field_at(fm.Eitp, x, y, z)
+        B = field_at(fm.Bitp, x, y, z)
+        return EMField(E, B)
+
+    elseif lowercase(fm.gridGeometry) == "cylindrical"
+        # Cylindrical grid:
+        # 1. Convert input Cartesian coordinates (x, y, z) to cylindrical coordinates (r, θ, z).
         r = sqrt(x^2 + y^2)
-        θ = atan(y, x)  # atan2 equivalent
-        
-        EM = get_fields_index(fm, r, θ, z)
-        
-        # Convert field components from cylindrical to Cartesian
+        θ = atan(y, x)
+
+        # 2. Interpolate using the physical (r, z) coordinates on the 2D grid.
+        # The result gives field components in the *cylindrical basis* (Er, Eθ, Ez) / (Br, Bθ, Bz) at the requested (r, z).
+        EM_cyl = EMField(
+            field_at(fm.Eitp, r, z), # Interpolate using r and z
+            field_at(fm.Bitp, r, z)
+        )
+
+        # 3. Convert the interpolated field vectors from the cylindrical basis back to the Cartesian basis.
         cos_θ, sin_θ = cos(θ), sin(θ)
         
-        Ex = EM.E[1] * cos_θ - EM.E[2] * sin_θ
-        Ey = EM.E[1] * sin_θ + EM.E[2] * cos_θ
-        Bx = EM.B[1] * cos_θ - EM.B[2] * sin_θ
-        By = EM.B[1] * sin_θ + EM.B[2] * cos_θ
-        
-        return EMField(SVector{3}(Ex, Ey, EM.E[3]), SVector{3}(Bx, By, EM.B[3]))
+        Ex = EM_cyl.E[1] * cos_θ - EM_cyl.E[2] * sin_θ
+        Ey = EM_cyl.E[1] * sin_θ + EM_cyl.E[2] * cos_θ
+        Ez = EM_cyl.E[3]
+
+        Bx = EM_cyl.B[1] * cos_θ - EM_cyl.B[2] * sin_θ
+        By = EM_cyl.B[1] * sin_θ + EM_cyl.B[2] * cos_θ
+        Bz = EM_cyl.B[3] # Bz component remains the same
+
+        # Construct the final EMField object with Cartesian components.
+        E = SVector(Ex, Ey, Ez)
+        B = SVector(Bx, By, Bz)
+
+        return EMField(E, B)
     else
-        error("Unsupported geometry: $(fm.metadata["geometry"])")
+        error("Unsupported grid geometry for field evaluation: $(fm.gridGeometry)")
     end
 end
