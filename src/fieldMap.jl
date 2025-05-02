@@ -325,7 +325,7 @@ Handles coordinate transformations for cylindrical grids.
 """
 function get_fields(fm::FieldMap, x::Float64, y::Float64, z::Float64)
     # Helper function to evaluate field components using the interpolator tuple
-     function field_at(itp_tuple::Union{Nothing, NTuple{N, Interpolations.AbstractInterpolation}}, coords...) where N
+     function field_at(itp_tuple::Union{Nothing, NTuple{N, AbstractInterpolation}}, coords...) where N
         # Return zero vector if no interpolator exists for this field (E or B)
         itp_tuple === nothing && return SVector{3, ComplexF64}(0.0, 0.0, 0.0)
         # TODO: Ensure coordinates are within bounds or handle extrapolation
