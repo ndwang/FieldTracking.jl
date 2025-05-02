@@ -63,7 +63,7 @@ function load_fieldmap(path::String)
             if grid_id == ""
                 error("No valid grid found in HDF5 file")
             end
-            root_group = file[joinpath(base_dir, grid_id)] # Use joinpath for robustness
+            root_group = file[join([base_dir, grid_id],"/")]
         elseif basePath != ""
             root_group = file[basePath]
         end
@@ -332,6 +332,9 @@ function get_fields(fm::FieldMap, x::Float64, y::Float64, z::Float64)
         # Rely on Interpolations.jl default behavior for now
         return SVector{3}(map(itp -> itp(coords...), itp_tuple)...)
     end
+
+    # Adjust coordinates based on the grid origin offset
+    x, y, z = (x, y, z) .+ fm.gridOriginOffset
 
     if lowercase(fm.gridGeometry) == "rectangular"
         # Rectangular grid: Interpolate directly using Cartesian coordinates (x, y, z)
