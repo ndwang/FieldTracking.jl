@@ -33,12 +33,12 @@ function dynamics!(du, u, p, t)
     force = charge * (EM.E + cross(vel, EM.B))
 
     # du/dt
-    du[1] = vx
-    du[2] = force[1]
-    du[3] = vy
-    du[4] = force[2]
-    du[5] = vz
-    du[6] = force[3]
+    du[1] = vx / vz
+    du[2] = force[1] / vz
+    du[3] = vy / vz
+    du[4] = force[2] / vz
+    du[5] = 1.0
+    du[6] = force[3] / vz
 end
 
 """
