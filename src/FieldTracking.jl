@@ -1,6 +1,8 @@
 module FieldTracking
 
-using StaticArrays, DifferentialEquations, Interpolations, HDF5, LinearAlgebra
+using StaticArrays, HDF5, LinearAlgebra
+using DifferentialEquations: ODEProblem, solve, Tsit5 # Import specific components
+using Interpolations: interpolate, Gridded, Linear, AbstractInterpolation # Import specific components
 
 # Load submodules
 include("fieldMap.jl")
